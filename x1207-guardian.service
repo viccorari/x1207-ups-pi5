@@ -1,0 +1,12 @@
+[Unit]
+Description=Guardian del UPS HAT Suptronics X1207 (apagado por corte de AC + proteccion de bateria)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/x1207ctl.py guardian
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
