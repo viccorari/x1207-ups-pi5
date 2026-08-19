@@ -378,7 +378,15 @@ def main():
     sp.set_defaults(func=cmd_guardian)
 
     args = p.parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    except BrokenPipeError:
+        # p. ej. `x1207ctl.py status | head -5`: el consumidor cierra la tubería
+        # antes de que terminemos de escribir. Sin esto, Python vuelca un
+        # traceback al salir. Se redirige stdout a /dev/null para que el
+        # vaciado final del intérprete no vuelva a fallar.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(0)
 
 
 if __name__ == "__main__":
