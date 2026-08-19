@@ -8,19 +8,29 @@ en un Raspberry Pi 5, con el ciclo de energía completamente automático:
 | Se corta la alimentación externa (USB-C o PoE) | La Pi se apaga sola en ~4 s, **por completo** |
 | Vuelve la alimentación externa | El HAT enciende la Pi sola, sin tocar el botón |
 
-Probado sobre Raspberry Pi OS / Debian 13 (trixie), kernel 6.12+, Pi 5 Model B.
+Probado sobre Raspberry Pi 5 Model B en **Debian 12 (bookworm, kernel 6.6)** y
+**Debian 13 (trixie, kernel 6.12+)**. El script se adapta solo a las diferencias
+entre ambas versiones (ver [Compatibilidad](#compatibilidad-entre-versiones-de-raspberry-pi-os)).
 
 ---
 
 ## Instalación rápida
 
-En el Raspberry Pi, con el HAT ya montado:
+En el Raspberry Pi, con el HAT ya montado. El repositorio es **privado**, así que
+o bien se copian los archivos desde otra máquina:
+
+```bash
+scp x1207ctl.py x1207-guardian.service install.sh usuario@IP_DEL_PI:/tmp/x1207/
+ssh usuario@IP_DEL_PI 'cd /tmp/x1207 && sudo ./install.sh'
+```
+
+o bien se clona desde el propio Pi (requiere credenciales de GitHub):
 
 ```bash
 git clone https://github.com/viccorari/x1207-ups-pi5.git
 cd x1207-ups-pi5
 sudo ./install.sh
-sudo reboot        # necesario la primera vez
+sudo reboot        # sólo si install.sh lo pide
 ```
 
 Tras el reinicio, comprobar:
@@ -62,6 +72,11 @@ enciende la Pi sola. `install.sh` lo configura automáticamente.
 > **Nota:** si apagas la Pi por software **con la corriente conectada** (mantenimiento),
 > vas a necesitar el botón para encenderla. Es el comportamiento esperado: no hay
 > evento de "energía restaurada" que el HAT pueda detectar.
+
+> **La EEPROM es de la placa, no de la tarjeta SD.** Una vez configurado,
+> `POWER_OFF_ON_HALT=1` sobrevive a reinstalaciones del sistema operativo y a
+> cambios de tarjeta. Al reinstalar sólo hay que volver a poner el software
+> (script + servicio + I2C), no este ajuste.
 
 ---
 
@@ -140,6 +155,23 @@ Consumo total: 1.81 W
 | `--charge-protect-hysteresis` | `5.0` | Margen para volver a habilitar la carga |
 
 Con los valores por defecto, el apagado ocurre ~4 s después del corte de energía.
+
+---
+
+## Compatibilidad entre versiones de Raspberry Pi OS
+
+Entre Debian 12 y Debian 13 cambian dos cosas que rompen cualquier script escrito
+para una sola versión (por eso el fabricante publica dos juegos de scripts,
+`pld.py` y `pld-trixie.py`). `x1207ctl.py` detecta ambas en tiempo de ejecución:
+
+| | Debian 12 (bookworm, kernel 6.6) | Debian 13 (trixie, kernel 6.12+) |
+|---|---|---|
+| Versión de `libgpiod` | 1.6.x — API `Chip.get_line()` / `line.request()` | 2.x — API `gpiod.request_lines()` |
+| gpiochip del header de 40 pines | `/dev/gpiochip4` | `/dev/gpiochip0` |
+
+El chip **no se busca por número** sino por su etiqueta `pinctrl-rp1`, que es
+estable entre versiones. La API de `libgpiod` se detecta con
+`hasattr(gpiod, "request_lines")`.
 
 ---
 

@@ -48,6 +48,7 @@ install.sh; ver README.md.
 """
 
 import argparse
+import functools
 import json
 import os
 import struct
@@ -58,7 +59,6 @@ from pathlib import Path
 
 import gpiod
 import smbus2
-from gpiod.line import Direction, Value
 
 
 def _privileged(cmd: list[str]) -> list[str]:
@@ -71,7 +71,6 @@ FUEL_GAUGE_ADDR = 0x36
 VCELL_REG = 0x02
 SOC_REG = 0x04
 
-GPIOCHIP = "/dev/gpiochip0"
 PLD_PIN = 6      # AC power loss / power adapter failure (entrada)
 CHARGE_PIN = 16  # control de carga (salida)
 
@@ -103,15 +102,60 @@ def battery_label(voltage: float) -> str:
 
 # ------------------------------------------------------------- GPIO / AC
 
+# libgpiod cambia de API entre versiones de Raspberry Pi OS: Debian 12 trae
+# la 1.x y Debian 13 la 2.x, que no son compatibles entre si. Por eso el
+# fabricante publica dos juegos de scripts; aqui se soportan las dos.
+_GPIOD_V2 = hasattr(gpiod, "request_lines")
+
+
+def _chip_label(path: str) -> str:
+    if _GPIOD_V2:
+        with gpiod.Chip(path) as chip:
+            return chip.get_info().label
+    chip = gpiod.Chip(path)
+    try:
+        return chip.label()
+    finally:
+        chip.close()
+
+
+@functools.lru_cache(maxsize=1)
+def find_gpiochip() -> str:
+    """Ruta del gpiochip del header de 40 pines.
+
+    El numero cambia entre versiones: en Debian 12 (kernel 6.6) el RP1 del
+    Pi 5 es gpiochip4, y en Debian 13 (kernel 6.12+) pasó a ser gpiochip0.
+    Se busca por etiqueta ('pinctrl-rp1') para no depender del numero.
+    """
+    for path in sorted(Path("/dev").glob("gpiochip*")):
+        try:
+            if _chip_label(str(path)) == "pinctrl-rp1":
+                return str(path)
+        except (OSError, PermissionError):
+            continue
+    return "/dev/gpiochip0"
+
+
 def read_ac_power() -> bool:
     """True si hay alimentación externa (PoE o USB-C) presente y sana."""
-    req = gpiod.request_lines(
-        GPIOCHIP, consumer="x1207ctl-ac",
-        config={PLD_PIN: gpiod.LineSettings(direction=Direction.INPUT)})
+    chip_path = find_gpiochip()
+    if _GPIOD_V2:
+        from gpiod.line import Direction, Value
+        req = gpiod.request_lines(
+            chip_path, consumer="x1207ctl-ac",
+            config={PLD_PIN: gpiod.LineSettings(direction=Direction.INPUT)})
+        try:
+            return req.get_values()[0] == Value.ACTIVE
+        finally:
+            req.release()
+    chip = gpiod.Chip(chip_path)
+    line = chip.get_line(PLD_PIN)
     try:
-        return req.get_values()[0] == Value.ACTIVE
+        line.request(consumer="x1207ctl-ac", type=gpiod.LINE_REQ_DIR_IN)
+        return bool(line.get_value())
     finally:
-        req.release()
+        line.release()
+        chip.close()
 
 
 def read_charge_state() -> str:
