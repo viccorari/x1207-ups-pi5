@@ -14,17 +14,20 @@ entre ambas versiones (ver [Compatibilidad](#compatibilidad-entre-versiones-de-r
 
 ---
 
-## Instalación rápida
+## Contenido del repositorio
 
-En el Raspberry Pi, con el HAT ya montado. El repositorio es **privado**, así que
-o bien se copian los archivos desde otra máquina:
+| Archivo | Para qué sirve |
+|---|---|
+| `x1207ctl.py` | Herramienta principal: leer estado, controlar la carga, demonio `guardian` |
+| `x1207-guardian.service` | Unidad systemd que mantiene el `guardian` corriendo siempre |
+| `install.sh` | Instalación desatendida completa (se ejecuta en el Pi, como root) |
+| `verificar.sh` | Comprueba que todo quedó bien instalado, con prueba real de corte de luz |
 
-```bash
-scp x1207ctl.py x1207-guardian.service install.sh usuario@IP_DEL_PI:/tmp/x1207/
-ssh usuario@IP_DEL_PI 'cd /tmp/x1207 && sudo ./install.sh'
-```
+---
 
-o bien se clona desde el propio Pi (requiere credenciales de GitHub):
+## Instalación rápida (Pi que ya está funcionando)
+
+Con el HAT montado y la batería puesta, desde el propio Pi:
 
 ```bash
 git clone https://github.com/viccorari/x1207-ups-pi5.git
@@ -32,6 +35,86 @@ cd x1207-ups-pi5
 sudo ./install.sh
 sudo reboot        # sólo si install.sh lo pide
 ```
+
+O copiando los archivos desde otra máquina, si el Pi no tiene salida a internet:
+
+```bash
+scp x1207ctl.py x1207-guardian.service install.sh verificar.sh usuario@IP_DEL_PI:/tmp/x1207/
+ssh usuario@IP_DEL_PI 'cd /tmp/x1207 && chmod +x *.sh && sudo ./install.sh'
+```
+
+Después, comprobar que quedó todo bien:
+
+```bash
+./verificar.sh
+```
+
+---
+
+## Instalación desde cero, en un Raspberry Pi virgen
+
+Procedimiento completo partiendo de un Pi 5 recién sacado de la caja.
+
+### 1. Montaje físico (con todo desconectado de la corriente)
+
+1. Insertar la celda **21700** en el portapilas del HAT, respetando la polaridad
+   (el `+` está serigrafiado en la placa).
+2. Encajar el X1207 sobre el header de 40 pines del Pi 5, alineando bien los pines.
+3. Asegurarse de que el **pogo pin** del HAT hace contacto con el pad `PSW` del
+   Pi 5. Sin ese contacto el botón del HAT no puede encender ni apagar la Pi.
+4. Atornillar los separadores.
+
+> Este HAT es **exclusivo del Raspberry Pi 5**. No es compatible con Pi 4B/3B+/3B.
+
+### 2. Grabar el sistema operativo
+
+Con **Raspberry Pi Imager** en cualquier PC:
+
+1. Elegir *Raspberry Pi 5* como dispositivo y **Raspberry Pi OS (64-bit)** como
+   sistema. Sirven tanto la versión basada en Debian 12 como en Debian 13.
+2. Antes de grabar, entrar en **Editar ajustes** y configurar:
+   - Nombre de host (por ejemplo `SCU-<algo>`)
+   - Usuario y contraseña
+   - Red Wi-Fi, si se va a usar (con cable ethernet no hace falta)
+   - En la pestaña *Servicios*: **activar SSH** con autenticación por contraseña
+3. Grabar la microSD e insertarla en el Pi.
+
+Activar SSH en este paso evita necesitar pantalla y teclado.
+
+### 3. Primer arranque y acceso
+
+1. Conectar el cable de red (o dejar que levante el Wi-Fi configurado).
+2. Alimentar por **USB-C** o **PoE** al HAT (no directamente al Pi).
+3. Si la Pi no arranca sola, pulsar una vez el botón del HAT.
+4. Localizarla en la red y entrar por SSH:
+
+```bash
+ssh usuario@raspberrypi.local     # o por IP: ssh usuario@192.168.X.Y
+```
+
+Si `.local` no resuelve, ver [Cómo localizar el Pi en la red](#cómo-localizar-el-pi-en-la-red).
+
+### 4. Instalar
+
+```bash
+sudo apt update && sudo apt full-upgrade -y     # recomendable, no obligatorio
+# copiar aquí los archivos del repositorio (scp o git clone)
+cd ruta/al/repositorio
+sudo ./install.sh
+sudo reboot
+```
+
+El reinicio es necesario la primera vez: activa el I2C y aplica el ajuste de la
+EEPROM.
+
+### 5. Verificar
+
+```bash
+./verificar.sh            # comprobaciones automáticas
+./verificar.sh --test     # además, prueba real desconectando la corriente
+```
+
+Debe terminar con **0 fallas**. A partir de ahí el ciclo ya es automático.
 
 Tras el reinicio, comprobar:
 
@@ -189,7 +272,7 @@ LEDs con serigrafía en la placa, junto al conector USB-C: **CHG** (cargando),
 
 ---
 
-## Qué hace `install.sh`
+## Qué hace `install.sh` (y cómo revertirlo)
 
 1. Verifica que sea un Raspberry Pi 5.
 2. Instala dependencias: `python3-smbus2`, `python3-libgpiod`, `i2c-tools`.
@@ -201,9 +284,69 @@ LEDs con serigrafía en la placa, junto al conector USB-C: **CHG** (cargando),
 7. Activa el journal persistente, para conservar los logs entre reinicios y poder
    diagnosticar qué pasó durante un corte de corriente.
 
+Es idempotente: se puede volver a ejecutar sin problema, sólo aplica lo que falte.
+
+### Desinstalar
+
+```bash
+sudo systemctl disable --now x1207-guardian
+sudo rm /etc/systemd/system/x1207-guardian.service /usr/local/bin/x1207ctl.py
+sudo systemctl daemon-reload
+```
+
+Esto quita el software. Para que además la Pi vuelva a quedarse en espera al
+apagarse (comportamiento de fábrica), hay que revertir la EEPROM:
+
+```bash
+sudo rpi-eeprom-config > /tmp/e.conf
+sed -i '/^POWER_OFF_ON_HALT=/d' /tmp/e.conf
+sudo rpi-eeprom-config --apply /tmp/e.conf
+sudo reboot
+```
+
 ---
 
-## Verificar que el ciclo completo funciona
+## Verificación
+
+### Script automático
+
+`verificar.sh` comprueba 19 puntos: hardware, dependencias, I2C, fuel gauge,
+`POWER_OFF_ON_HALT`, software, servicio, journal persistente y lecturas en vivo.
+Devuelve código de salida `0` si todo está bien y `1` si algo falla, así que
+también sirve dentro de otros scripts.
+
+```bash
+./verificar.sh
+```
+
+```
+1. Hardware y sistema
+  [ OK ] Modelo: Raspberry Pi 5 Model B Rev 1.1
+         SO: Debian GNU/Linux 12 (bookworm) | kernel 6.6.31+rpt-rpi-2712
+...
+Resumen
+  Correctas: 19   Avisos: 0   Fallas: 0
+```
+
+### Prueba real de corte de corriente
+
+```bash
+./verificar.sh --test
+```
+
+Añade una prueba interactiva que confirma que la Pi **detecta de verdad** el corte
+y el retorno de la corriente. El script:
+
+1. **Detiene temporalmente el `guardian`**, para que no apague la Pi durante la prueba
+   (la Pi sigue funcionando con la batería del HAT).
+2. Pide desconectar la alimentación y espera hasta 90 s a detectar el corte.
+3. Pide reconectarla y espera a detectar el retorno.
+4. **Reactiva el `guardian`** al terminar — incluso si se interrumpe con `Ctrl+C`.
+
+### Prueba del ciclo completo (fin a fin)
+
+La prueba anterior valida la *detección*. Para validar el ciclo entero, con
+apagado y encendido reales:
 
 1. `x1207ctl.py status` → debe mostrar `AC / PoE: OK`.
 2. Desconectar la alimentación externa.
@@ -211,6 +354,21 @@ LEDs con serigrafía en la placa, junto al conector USB-C: **CHG** (cargando),
    completo**. Si el LED rojo queda encendido, `POWER_OFF_ON_HALT=1` no se aplicó
    (revisar con `sudo rpi-eeprom-config`) y el auto-encendido no va a funcionar.
 4. Reconectar la alimentación externa → la Pi debe arrancar sola, sin tocar el botón.
+
+Después de un corte, se puede revisar qué pasó exactamente (el journal persistente
+conserva los logs entre arranques):
+
+```bash
+sudo journalctl -u x1207-guardian -b -1 | tail -20
+```
+
+Un ciclo correcto deja un rastro como este:
+
+```
+[guardian] AC perdida (2 lecturas seguidas) -> apagando ahora
+systemd-logind[681]: System is powering down (Perdida de AC (x1207ctl guardian)).
+systemd[1]: Reached target poweroff.target - System Power Off.
+```
 
 ---
 
@@ -231,6 +389,27 @@ journalctl -u x1207-guardian -b -1  # log del arranque anterior (util tras un co
 | La Pi se apaga pero el LED rojo sigue encendido | Falta `POWER_OFF_ON_HALT=1` |
 | No enciende sola al volver la corriente | Mismo caso anterior |
 | `i2cdetect` no muestra `0x36` | Batería mal puesta o HAT mal asentado en el header |
+| El botón no enciende ni apaga la Pi | El pogo pin no hace contacto con el pad `PSW` del Pi 5 |
+| `AttributeError: module 'gpiod' has no attribute ...` | Versión de `x1207ctl.py` anterior al soporte de Debian 12 → actualizar |
+
+### Cómo localizar el Pi en la red
+
+El Pi puede cambiar de IP cada vez que arranca, porque el router le asigna un
+lease nuevo por DHCP. Para encontrarlo:
+
+```bash
+# por nombre mDNS (lo mas simple, si la red lo permite)
+ping NOMBRE_DEL_HOST.local
+
+# buscando su MAC en la tabla ARP (los Pi usan el prefijo 88:a2:9e, entre otros)
+ping -b -c3 192.168.1.255 2>/dev/null; ip neigh | grep -i '88:a2:9e'
+
+# barrido de la subred buscando SSH abierto
+nmap -p22 --open 192.168.1.0/24
+```
+
+Si el equipo va a quedar fijo, conviene reservarle la IP en el router (por MAC) o
+configurársela estática, y así evitar tener que buscarlo cada vez.
 
 ---
 
